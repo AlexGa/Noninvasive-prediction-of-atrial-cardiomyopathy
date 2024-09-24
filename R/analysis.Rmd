@@ -1,0 +1,1214 @@
+---
+title: 'Noninvasive prediction of atrial cardiomyopathy characterized by multipolar high-density contact mapping'
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Moritz T. Huttelmaier MD<sup>a</sup>; Alexander Gabel, PhD <sup>b,c</sup>; Stefan Störk, MD PhD <sup>a,d</sup>; Stefan Frantz, MD <sup>a,d</sup>; Caroline Morbach, MD <sup>a,d</sup>; Thomas H. Fischer, MD <sup>a</sup>
+
+<sup>a</sup> Dept. of Internal Medicine I, University Hospital Würzburg (UKW), Germany 
+
+<sup>b</sup> Institute of Medical Virology, Goethe-University Frankfurt, 60596 Frankfurt am Main, Germany
+
+<sup>c</sup> Infection Control and Antimicrobial Stewardship Unit, UKW, Würzburg, Germany
+
+<sup>d</sup> Dept. Clinical Research & Epidemiology, Comprehensive Heart Failure Centre Würzburg, University Hospital Würzburg, Germany
+
+<br /> 
+
+
+# Import Data
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, comment=FALSE, results='asis'}
+library(dplyr)
+library(ggplot2)
+library(dendextend)
+library(Boruta)
+library(Amelia)
+library(caret)
+library(yardstick)
+library(plotly)
+library(mclust)
+
+source("R/helper_functions.R")
+
+input_dir <- "~/Projekte/Huttelmaier_Atriale_Kardiomyopathie/"  
+plot.dir <- "plots"
+
+if(!file.exists(plot.dir)){
+  dir.create(plot.dir)
+}
+
+data.dir <- "data"
+
+if(!file.exists(data.dir)){
+  dir.create(data.dir)
+}
+
+if(! dir.exists("data")){
+  dir.create("data")
+}
+
+compl_df <- readr::read_delim("data/input_dataset.csv")
+
+set.seed(1)
+```
+
+# General Stats
+
+## Gender
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+compl_df %>% mutate(gender = if_else(`gender (0=female, 1=male)` == 0, 
+                                     true = "female", false = "male")) %>% 
+             group_by(gender) %>% summarise(n = n(), .groups = "drop") %>% 
+             mutate(comb =  paste0(n, " (", round(n/sum(n) * 100, 2),"%)")) %>% 
+             dplyr::select(-n) %>%
+             tidyr::pivot_wider(names_from = gender, values_from = "comb") %>% 
+  DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Median (IQR)
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, comment=FALSE, results='asis'}
+compl_df %>% dplyr::summarise(Age = med_iqr(age_examination),
+                       Height = med_iqr(`height (cm)`),
+                       Weight = med_iqr(`weight (kg)`),
+                       BMI = med_iqr(`BMI (kg/m²)`),
+                       `NT_pro_BNP (pg/ml)` = med_iqr(`NT_pro_BNP (pg/ml)`),
+                       `CHA2DS2-VASc` = med_iqr(`CHA2DS2-VASc`),
+                        `AA_duration (months)` = med_iqr(`AA_duration (months)`),
+                       `BSADuBois (m²)` = med_iqr(`BSADuBois (m²)`),
+                       `LVEF biplan (%)` = med_iqr(`LVEF biplan (%)`),
+                       `GLPS AFI average (%)` = med_iqr(`GLPS AFI average (%)`),
+                       `Map Points` = med_iqr(map_points),
+                       `LVA_0.5 (cm²)` = med_iqr(`LVA_0.5 (cm²)`),
+                       `LVA_1.0 (cm²)` = med_iqr(`LVA_1.0 (cm²)`),
+                       ) %>% 
+              tidyr::pivot_longer(cols = matches("."), names_to = "Property", 
+                                  values_to = "Median (IQR)") %>% 
+  DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Mean ± SD
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+compl_df %>% summarise(Age = mean_sd(age_examination),
+                       Height = mean_sd(`height (cm)`),
+                       Weight = mean_sd(`weight (kg)`),
+                       BMI = mean_sd(`BMI (kg/m²)`),
+                       `NT_pro_BNP (pg/ml)` = mean_sd(`NT_pro_BNP (pg/ml)`),
+                       `CHA2DS2-VASc` = mean_sd(`CHA2DS2-VASc`),
+                        `AA_duration (months)` = mean_sd(`AA_duration (months)`),
+                       `BSADuBois (m²)` = mean_sd(`BSADuBois (m²)`),
+                       `LVEF biplan (%)` = mean_sd(`LVEF biplan (%)`),
+                       `GLPS AFI average (%)` = mean_sd(`GLPS AFI average (%)`),
+                       `Map Points` = mean_sd(map_points),
+                       `LVA_0.5 (cm²)` = mean_sd(`LVA_0.5 (cm²)`),
+                       `LVA_1.0 (cm²)` = mean_sd(`LVA_1.0 (cm²)`),
+                       ) %>% 
+              tidyr::pivot_longer(cols = matches("."), names_to = "Property", 
+                                  values_to = "Mean ± SD") %>% 
+  DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Paroxysomal AF bzw. Persistent AF
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+compl_df %>% mutate(AF = if_else(`AF (0=paroxysmal, 1=persistent)` == 0, 
+                                 true = "paroxysmal", false = "persistent")) %>% 
+             group_by(AF) %>% summarise(n = n(), .groups = "drop") %>% 
+             mutate(comb =  paste0(n, " (", round(n/sum(n) * 100, 2),"%)")) %>% 
+  dplyr::select(-n) %>%
+             tidyr::pivot_wider(names_from = AF, values_from = "comb") %>% 
+  DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=2, fig.width=7}
+compl_df %>% dplyr::select(`LVA_0.5 (cm²)`, `LVA_1.0 (cm²)`) %>% 
+             dplyr::rename(`LVA 0.5` = `LVA_0.5 (cm²)`,
+                           `LVA 1.0` = `LVA_1.0 (cm²)`) %>%
+             tidyr::pivot_longer(cols = c(`LVA 0.5`, `LVA 1.0`),names_to = "area (cm²)", values_to = "LVA") %>%
+  ggplot2::ggplot(ggplot2::aes(y = `area (cm²)`, x = LVA, fill = stat(x))) +
+  ggridges::geom_density_ridges_gradient(bandwidth = 3, jittered_points = TRUE,
+                                         position = ggridges::position_points_jitter(width = 0.05, height = 0),
+                                          point_shape = '|', point_size = 3, point_alpha = 1, alpha = 0.7) +
+  ggplot2::theme_void() +
+  ggplot2::xlab("") +
+  ggplot2::ylab("") +
+  scale_fill_viridis_c(option = "C", name ="[cm²]") + 
+  ggplot2::scale_y_discrete(expand = c(0,0,0,1.25)) +
+  ggplot2::scale_x_continuous(limits = c(0, 70)) +
+  ggplot2::theme(legend.position = "right",
+                 # legend.title = ggplot2::element_blank(),
+                 axis.text = ggplot2::element_text(colour = "black", size = 12),
+                 strip.background = ggplot2::element_rect(fill = "white"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 strip.text = ggplot2::element_text(face = "bold", size = 12), panel.border = ggplot2::element_blank())
+
+ggplot2::ggsave(filename = file.path(plot.dir, "Density_plots_LVA.pdf"), width = 8, height = 4, device = "pdf", dpi = 300)
+ggplot2::ggsave(filename = file.path(plot.dir, "Density_plots_LVA.svg"), width = 8, height = 4, device = "svg", dpi = 300)
+```
+
+
+# Gaussian Mixture Model (GMM)
+
+## GMM - LVA 0.5 (cm²)
+
+### GMM cluster parameter LVA 0.5 (cm²)
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=4, fig.width=8}
+x_obs <- as.matrix(compl_df %>% pull(`LVA_0.5 (cm²)`))
+set.seed(10)
+gmm_obj05 <- max.em.gmm(x = x_obs, K = 2, epsilon = 1e-3, do.plot = F)
+
+log_ll <- gmm_obj05$log.ll[length(gmm_obj05$log.ll)]
+
+clusters <- data.frame(ID = compl_df %>% pull(ID), cluster_number = apply(gmm_obj05$gamma, 1, FUN = which.max))
+
+orderAC <- order(gmm_obj05$mu[,1], decreasing = F)
+
+ordered_clusters <- data.frame(cluster_order = orderAC, 
+                               gmm05_1_2 = factor( c("mild", "severe"), levels =  c("mild", "severe")))
+
+
+gmm_cluster_vec <- clusters %>% 
+                   dplyr::inner_join(ordered_clusters, by = c("cluster_number" = "cluster_order"))
+
+compl_df <- dplyr::inner_join(compl_df, gmm_cluster_vec, by = "ID")
+
+
+gmm_obj05[[1]] <- as.matrix(gmm_obj05[[1]][orderAC,])
+gmm_obj05[[2]] <- as.matrix(gmm_obj05[[2]][orderAC,])
+gmm_obj05[[3]] <- gmm_obj05[[3]][orderAC]
+
+rownames(gmm_obj05[[1]]) <- rownames(gmm_obj05[[2]]) <- names(gmm_obj05[[3]]) <- c("mild", "severe")
+
+para_mat <- do.call("cbind", gmm_obj05[1:2])
+if(ncol(para_mat) == 2){
+      colnames(para_mat) <- c("mu", "var")
+}else{
+      colnames(para_mat) <- paste0(rep(c("mu.", "var."), each = 2), 1:2)
+}
+
+DT::datatable(apply(para_mat, 2, format, digits = 2), 
+                extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F)) %>% 
+      htmltools::tagList() 
+```
+
+### Shapiro-Wilk test for cluster LVA 0.5 (cm²)
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+compl_df %>% group_by(gmm05_1_2) %>% dplyr::rename(LVA_0.5 = `LVA_0.5 (cm²)`) %>% rstatix::shapiro_test(LVA_0.5)
+```
+
+
+## GMM - LVA 1.0 (cm²)
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=4, fig.width=8}
+x_obs <- as.matrix(compl_df %>% pull(`LVA_1.0 (cm²)`))
+set.seed(10)
+gmm_obj <- max.em.gmm(x = x_obs, K = 2, epsilon = 1e-3, do.plot = F)
+
+log_ll <- gmm_obj$log.ll[length(gmm_obj$log.ll)]
+
+clusters <- data.frame(ID = compl_df %>% pull(ID), cluster_number = apply(gmm_obj$gamma, 1, FUN = which.max))
+
+orderAC <- order(gmm_obj$mu[,1], decreasing = F)
+
+ordered_clusters <- data.frame(cluster_order = orderAC, 
+                               gmm_1_2 = factor( c("mild", "severe"), levels =  c("mild", "severe")))
+
+
+gmm_cluster_vec <- clusters %>% 
+                   dplyr::inner_join(ordered_clusters, by = c("cluster_number" = "cluster_order"))
+
+compl_df <- dplyr::inner_join(compl_df, gmm_cluster_vec, by = "ID")
+
+
+gmm_obj[[1]] <- as.matrix(gmm_obj[[1]][orderAC,])
+gmm_obj[[2]] <- as.matrix(gmm_obj[[2]][orderAC,])
+gmm_obj[[3]] <- gmm_obj[[3]][orderAC]
+
+rownames(gmm_obj[[1]]) <- rownames(gmm_obj[[2]]) <- names(gmm_obj[[3]]) <- c("mild", "severe")
+
+x <- seq(from = 0, to = 80, length.out = 10000)
+ll_mat <- matrix(nc = 2, nr = length(x))
+for(k in 1:2){
+  ll_mat[,k] <- dnorm(x, gmm_obj$mu[k], sd = sqrt(gmm_obj$sigma[k]))
+}
+lls <- rowSums(ll_mat)
+
+org_points <- data.frame(lva = x_obs, logll = -0.008, AC = compl_df$gmm_1_2) 
+
+gmm_plot <- data.frame(lva = x, logll = lls) %>%
+  ggplot2::ggplot(ggplot2::aes(y = logll, x = lva, fill = lva)) +
+  ggplot2::geom_bar(stat = "identity", width = 0.1) +
+  ggplot2::geom_line(col ="black", size = 1) +
+  ggplot2::geom_point(data = org_points, aes(shape = AC),col = "black", size = 4, alpha = 0.5) + 
+  scale_shape_manual(values=c(21, 24)) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_c(option = "C", name ="[cm²]") +
+  ggplot2::xlab("") +
+  ggplot2::ylab("") +
+  ggplot2::scale_y_continuous(limits= c(-0.008, 0.17)) +
+  ggplot2::scale_x_continuous(expand = c(0,0,0,0)) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "right",
+                 axis.text = ggplot2::element_text(colour = "black", size = 12),
+                 strip.background = ggplot2::element_rect(fill = "white"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 strip.text = ggplot2::element_text(face = "bold", size = 12))
+
+vis_arrow_df <- data.frame(lva = gmm_obj$mu) 
+log_ll_tmp <- matrix(nc = 2, nr = 2)
+for(k in 1:2){
+  log_ll_tmp[,k] <- dnorm(vis_arrow_df$lva, gmm_obj$mu[k], sd = sqrt(gmm_obj$sigma[k]))
+}
+vis_arrow_df$logll <- rowSums(log_ll_tmp)
+vis_arrow_df$sigma <- gmm_obj$sigma
+vis_arrow_df$mu_label <- c("mu[mild]", "mu[severe]")
+
+gmm_plot <- gmm_plot + ggplot2::geom_point(data = vis_arrow_df, pch = 3, size = 4) + 
+           ggplot2::geom_errorbarh(data = vis_arrow_df, aes(xmax = lva + sqrt(sigma), xmin = lva - sqrt(sigma), height = 0)) +
+           ggplot2::geom_segment(data = vis_arrow_df, aes(x = lva - sqrt(sigma), xend = lva + sqrt(sigma), y = logll, yend = logll),
+                                 arrow = arrow(angle = 45, length = unit(0.25, "cm"), ends = "both")) +
+           ggplot2::geom_text(data = vis_arrow_df, aes(label = mu_label), parse = T, nudge_y = 0.01)
+
+
+
+ggplot2::ggsave(gmm_plot, filename = file.path(plot.dir, "Density_plots_LVA_GMM.pdf"), width = 8, height = 4, device = "pdf", dpi = 300)
+ggplot2::ggsave(gmm_plot, filename = file.path(plot.dir, "Density_plots_LVA_GMM.svg"), width = 8, height = 4, device = "svg", dpi = 300)
+```
+
+
+### GMM cluster parameter 1.0 LVA
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+para_mat <- do.call("cbind", gmm_obj[1:2])
+if(ncol(para_mat) == 2){
+      colnames(para_mat) <- c("mu", "var")
+}else{
+      colnames(para_mat) <- paste0(rep(c("mu.", "var."), each = 2), 1:2)
+}
+
+DT::datatable(apply(para_mat, 2, format, digits = 2), 
+                extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F)) %>% 
+      htmltools::tagList() 
+```
+
+### Shapiro-Wilk test for cluster LVA 1.0 (cm²)
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+compl_df %>% group_by(gmm_1_2) %>% 
+             dplyr::rename(LVA_1.0 = `LVA_1.0 (cm²)`) %>% 
+             rstatix::shapiro_test(LVA_1.0) %>% 
+              mutate(across(where(is.double), ~ round(.x, digits = 2)))
+```
+
+
+```{r , warning=FALSE, echo = FALSE, message=FALSE, comment=FALSE, results = 'asis', fig.height=4, fig.width=8}
+gmm_plot
+```
+
+
+## Summarizing GMM experiments (Two classes)
+
+
+### Numbers of patients in mild and severe AC
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+rbind(compl_df %>% 
+        group_by(gmm05_1_2) %>% 
+        count() %>% 
+        tidyr::pivot_wider(names_from = gmm05_1_2, values_from = n) %>% 
+        mutate(name = "LVA 0.5"),
+      compl_df %>% 
+        group_by(gmm_1_2) %>% 
+        count() %>% 
+        tidyr::pivot_wider(names_from = gmm_1_2, values_from = n) %>% 
+        mutate(name = "LVA 1.0")) %>% 
+  dplyr::relocate(name) %>% 
+DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F)) %>% 
+      htmltools::tagList() 
+```
+
+
+## Proof of concept
+
+**Wilcoxon-Test for "CHA2DS2-VASc" and "NT_pro_BNP (pg/ml)"**
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("CHA2DS2-VASc", "NT_pro_BNP (pg/ml)")
+
+res_list <- sapply(comp_features, function(sel_feature){
+  if(!all(is.na(compl_df %>% dplyr::pull(!!sym(sel_feature))))){
+    
+     return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>% 
+              mutate(Feature = sel_feature))
+  }else{
+    return(NA)
+  }
+}, simplify = FALSE)
+
+all_tests_cluster <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>% 
+  relocate(Feature)
+
+cbind(all_tests_cluster, "p.adjusted" = p.adjust(all_tests_cluster$`P-value`, method = "BH")) %>% as_tibble() %>%
+  mutate(`P-adj. (short)` = dplyr::case_when(
+                                                 `p.adjusted` >= 0.01 ~ as.character(round(`p.adjusted`, 2)),
+                                                   `p.adjusted` < 0.0001 ~ "< 0.0001",
+                                                   `p.adjusted` < 0.001 ~ "< 0.001",
+                                                   `p.adjusted` < 0.01 ~ "< 0.01"),
+         p.adjusted = format(p.adjusted, digits = 2),
+         `P-value` = format(`P-value`, digits = 2)) %>% 
+  dplyr::arrange(p.adjusted) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+**Fisher Test for AF (0=paroxysmal, 1=persistent)**
+
+```{r}
+fisher_test_table(df = compl_df, gr_row = "gmm_1_2", gr_col = "AF (0=paroxysmal, 1=persistent)", as_kable = FALSE) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+
+# Echocardiography-dependent classification
+
+## Feature-Selection (Boruta Algorithm)
+
+
+```{r, , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+two_cl_df_set <- compl_df %>% dplyr::select(ID, age_examination, `gender (0=female, 1=male)`, `BMI (kg/m²)`, 
+                                            `LAVI/a'2D ((ml/m²)/(m/s))`, `LAVI/a' 4D ((ml/m²)/(m/s))`, 
+                                            `LAVImax 4D (ml/m²)`, `total LA-EF (%)`, `LA-EF total 4D (%)`,
+                                            `LASr R av. (%)`,
+                                            `LAScd R av. (%)`, `LASct R av. (%)`,
+                                            `LASr 4D (%)`, `LAScd 4D (%)`, `LASct 4D (%)`,
+                                            `LASr P av. (%)`,
+                                            `LASr_c 4D (%)`, `LAScd_c 4D (%)`,  `LASct_c 4D (%)`,
+                                            `LASr_c 4D (%)`,   `LAScd_c 4D (%)`,  `LASct_c 4D (%)`,
+                                            `MV e' sept. (cm/s)`,
+                                            `MV e' lat. (cm/s)`, `MV E/e' average`,
+                                            gmm_1_2, `LVA_1.0 (cm²)`, `LVA_0.5 (cm²)`, `TR Vmax (m/s)`)
+
+imputed_dataset <- c()
+
+if(!file.exists(file.path(data.dir, "imputed_finale_dataset.rds"))){
+  
+  boruta_test <- two_cl_df_set %>% as_tibble() %>% 
+               mutate(gender = factor(`gender (0=female, 1=male)`),
+                      y = factor(gmm_1_2)) %>% 
+               dplyr::select(-gmm_1_2, -ID, -`gender (0=female, 1=male)`, -`LVA_1.0 (cm²)`, -`LVA_0.5 (cm²)`)
+
+boruta_test_compl <- Amelia::amelia(boruta_test, m=5, parallel = "multicore",
+                            noms=c('gender','y'))
+
+imputed_dataset <- data.frame(ID = two_cl_df_set$ID, boruta_test_compl$imputations$imp3, check.names = F)
+saveRDS(object = imputed_dataset, file = file.path(data.dir, "imputed_finale_dataset.rds"))
+
+}else{
+  
+  imputed_dataset <- readRDS(file.path(data.dir, "imputed_finale_dataset.rds"))
+}
+  
+```
+  
+
+## Feature importance:
+
+  
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results='asis', fig.height=5, fig.width=15}
+boruta.af_df <- c()
+if(file.exists(file.path(data.dir, "boruta_af_dataset.rds"))){
+  boruta.af_df <- readRDS(file.path(data.dir, "boruta_af_dataset.rds"))
+
+}else{
+  boruta.df_train <- Boruta(y~., data = imputed_dataset %>% dplyr::select(-ID), doTrace = 2)
+  #take a call on tentative features
+  boruta.af_df <- TentativeRoughFix(boruta.df_train)
+
+  saveRDS(object = boruta.af_df, file = file.path(data.dir, "boruta_af_dataset.rds"))
+}
+
+df_importance <- reshape2::melt(as.data.frame(boruta.af_df$ImpHistory)) %>% dplyr::filter(is.finite(value))
+  
+
+df_imp_order <- df_importance %>% dplyr::group_by(variable) %>% 
+                  dplyr::summarize(med_imp = median(value)) %>% 
+                  ungroup() %>% mutate(med_rank = rank(med_imp))
+
+df_importance <- df_importance %>%
+                 left_join(data.frame(variable = names(boruta.af_df$finalDecision), 
+                                       decision = boruta.af_df$finalDecision)) %>% 
+                 mutate(decision = factor(if_else(is.na(decision), true = "Tentative", false = decision), levels = c("Tentative", "Rejected", "Confirmed")),
+                        variable = factor(variable, levels = df_imp_order$variable[order(df_imp_order$med_rank)]))
+  
+df_importance %>% dplyr::filter(decision != "Tentative") %>% 
+  ggplot2::ggplot(ggplot2::aes(x = variable, y = value, fill = decision)) + 
+  ggplot2::stat_boxplot(geom = "errorbar", width = 0.5) + 
+  ggplot2::geom_boxplot() +
+  ggplot2::scale_fill_manual(values = c( "#F37651FF","#40B7ADFF")) +
+  ggplot2::xlab("") + 
+  ggplot2::ylab("Importance score") +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "bottom",
+                 axis.text = ggplot2::element_text(colour = "black", size = 12),
+                 axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1),
+                 strip.background = ggplot2::element_rect(fill = "white"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 strip.text = ggplot2::element_text(face = "bold", size = 12))
+
+ggplot2::ggsave(file.path(plot.dir, "Boruta_feature_importance.pdf"), width = 12, height = 7, device = "pdf", dpi = 300)
+ggplot2::ggsave(file.path(plot.dir, "Boruta_feature_importance.svg"), width = 12, height = 7, device = "svg", dpi = 300)
+
+boruta_attributes <- getSelectedAttributes(boruta.af_df, withTentative = F)
+
+imputed_dataset <- imputed_dataset[c(boruta_attributes, "y")]
+final_df <- imputed_dataset[c(boruta_attributes, "y")]
+
+final_df <- final_df %>% dplyr::rename(age = "age_examination",
+                                       LAVI_a_2D = "LAVI/a'2D ((ml/m²)/(m/s))",  
+                                       LAVI_a_4D = "LAVI/a' 4D ((ml/m²)/(m/s))", 
+                                       LASr_R_av = "LASr R av. (%)",             
+                                       LASct_R_av = "LASct R av. (%)",            
+                                       LASr_4D = "LASr 4D (%)",
+                                       LASr_P_av = "LASr P av. (%)",
+                                       LASct_c_4D = "LASct_c 4D (%)",             
+                                       MV_e_sep = "MV e' sept. (cm/s)") %>% 
+    mutate(y = factor(if_else(y == 1, true = "mild", false = "severe"), 
+                      levels = c("mild", "severe")))
+```
+
+# SVM - classification
+
+## SVM with linear kernel 
+
+```{r, , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+svm_linear_result_list <- svm_cross_validation(final_df, svm_method = "svmLinear", number_cv = 5)
+svm_linear_result_list$perf_plot 
+
+ggplot2::ggsave(svm_linear_result_list$perf_plot, filename = file.path(plot.dir, "SVM_ROC_plot.pdf"), 
+                dpi = 300, device = "pdf", height = 6, width = 8)
+ggplot2::ggsave(svm_linear_result_list$perf_plot, filename = file.path(plot.dir, "SVM_ROC_plot.svg"), 
+                dpi = 300, device = "svg", height = 6, width = 8)
+```
+
+## SVM with radial kernel 
+
+```{r, , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+svm_radial_result_list <- svm_cross_validation(final_df, svm_method = "svmRadial", number_cv = 5)
+svm_radial_result_list$perf_plot
+
+ggplot2::ggsave(svm_radial_result_list$perf_plot, filename = file.path(plot.dir, "SVM_radial_ROC_plot.pdf"), 
+                dpi = 300, device = "pdf", height = 4, width = 5)
+ggplot2::ggsave(svm_radial_result_list$perf_plot, filename = file.path(plot.dir, "SVM_radial_ROC_plot.svg"), 
+                dpi = 300, device = "svg", height = 4, width = 5)
+```
+
+## SVM with polynomial kernel 
+
+```{r, , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+svm_poly_result_list <- svm_cross_validation(final_df, svm_method = "svmRadial", number_cv = 5)
+svm_poly_result_list$perf_plot
+
+ggplot2::ggsave(svm_poly_result_list$perf_plot, filename = file.path(plot.dir, "SVM_poly_ROC_plot.pdf"), 
+                dpi = 300, device = "pdf", height = 4, width = 5)
+ggplot2::ggsave(svm_poly_result_list$perf_plot, filename = file.path(plot.dir, "SVM_poly_ROC_plot.svg"), 
+                dpi = 300, device = "svg", height = 4, width = 5)
+```
+
+## Pairwise comparison of severe and mild AC
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- boruta_attributes
+
+res_list <- sapply(comp_features, function(sel_feature){
+  if(!all(is.na(compl_df %>% dplyr::pull(!!sym(sel_feature))))){
+    
+     return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>% 
+              mutate(Feature = sel_feature))
+  }else{
+    return(NA)
+  }
+}, simplify = FALSE)
+
+all_tests_cluster <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>% 
+  relocate(Feature)
+
+all_tests_cluster_comp <- cbind(all_tests_cluster, 
+                                "p.adjusted" = p.adjust(all_tests_cluster$`P-value`,
+                                                        method = "BH")) %>% 
+  as_tibble() %>%
+  mutate(`P-adj. (short)` = dplyr::case_when(`p.adjusted` >= 0.01 ~ as.character(round(`p.adjusted`, 2)),
+                                             `p.adjusted` < 0.0001 ~ "< 0.0001",
+                                             `p.adjusted` < 0.001 ~ "< 0.001",
+                                             `p.adjusted` < 0.01 ~ "< 0.01"),
+         p.adjusted = format(p.adjusted, digits = 2),
+         `P-value` = format(`P-value`, digits = 2))
+
+all_tests_cluster_comp %>% 
+  dplyr::arrange(p.adjusted) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=10, fig.width=15}
+plt_list <- list()
+
+plot_df <- compl_df[c(boruta_attributes, "gmm_1_2")] %>%
+            rename(group = gmm_1_2) %>%
+          dplyr::rename(age = `age_examination`,
+                        LAVI_a_2D = "LAVI/a'2D ((ml/m²)/(m/s))",  
+                        LAVI_a_4D = "LAVI/a' 4D ((ml/m²)/(m/s))", 
+                        LASr_R_av = "LASr R av. (%)",             
+                        LASct_R_av = "LASct R av. (%)",            
+                        LASr_4D = "LASr 4D (%)",
+                        LASr_P_av = "LASr P av. (%)",
+                        LASct_c_4D = "LASct_c 4D (%)",             
+                        MV_e_sep = "MV e' sept. (cm/s)")
+
+all_tests_cluster_comp <- all_tests_cluster_comp %>% dplyr::mutate(Feature = dplyr::if_else(Feature == "age_examination", true = "Age", false = Feature))
+
+feature_print_df <- data.frame(print_name = c("Age", "LAVI/a'2D ((ml/m²)/(m/s))", "LAVI/a' 4D ((ml/m²)/(m/s))", "LASr R av. (%)", 
+                                              "LASct R av. (%)", "LASr 4D (%)", "LASr P av. (%)", "LASct_c 4D (%)",  "MV e' sept. (cm/s)"),
+                              feature = c("age", "LAVI_a_2D", "LAVI_a_4D", "LASr_R_av", "LASct_R_av", "LASr_4D", "LASr_P_av", "LASct_c_4D", "MV_e_sep"))
+
+for(i in seq_along(feature_print_df$feature)){
+
+  sel_feature <- feature_print_df$feature[i]
+  print_name_feature <- feature_print_df$print_name[i]
+  
+  pval_anno <- all_tests_cluster_comp %>% filter(Feature == print_name_feature) %>% pull(`P-adj. (short)`)
+
+  plt_list[[i]] <- plot_df %>%
+  ggplot2::ggplot(ggplot2::aes_string(x = "group", y = sel_feature, fill = "group")) +
+  ggplot2::stat_boxplot(geom = "errorbar", lwd = 1, width = 0.5, show.legend = FALSE) +
+  ggplot2::geom_boxplot(color = "black", lwd = 1, show.legend = FALSE, outlier.size = 0) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.8, width = 0.4, pch = 20, size = 1) +
+  ggplot2::theme_bw() +
+  ggsci::scale_fill_jama() +
+  ggplot2::theme(axis.text = ggplot2::element_text(size = 14, colour = "black"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 legend.title = ggplot2::element_blank(),
+                 legend.text = ggplot2::element_text(size = 12),
+                 legend.position = "none") +
+  ggplot2::xlab("") +
+  ggplot2::ylab(print_name_feature) +
+  ggsignif::geom_signif(comparisons = list(c("mild", "severe")),
+                        annotation = pval_anno,
+                        tip_length = c(0.2, 0.04)) + 
+  ggplot2::scale_y_continuous(expand = expansion(mult = c(0.05, .1)))
+  
+  ggplot2::ggsave(plt_list[[i]], filename = file.path(plot.dir, paste0("Boxplot_comparison_MWU_", sel_feature, ".pdf")), 
+                  dpi = 300, height = 5, width = 6, device = "pdf")
+  ggplot2::ggsave(plt_list[[i]], filename = file.path(plot.dir, paste0("Boxplot_comparison_MWU_", sel_feature, ".svg")), 
+                  dpi = 300, height = 5, width = 6, device = "svg")
+}
+
+cowplot::plot_grid(plotlist = plt_list, nrow = 3)
+ggplot2::ggsave(filename = file.path(plot.dir, paste0("Grid_Boxplots_comparison_MWU_", sel_feature, ".pdf")), dpi = 300, height = 10, width = 15, device = "pdf")
+ggplot2::ggsave(filename = file.path(plot.dir, paste0("Grid_Boxplots_comparison_MWU_", sel_feature, ".svg")), dpi = 300, height = 10, width = 15, device = "svg")
+```
+
+# Distribution of voltage values
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'hide'}
+ratio_df <- read.table(file.path(data.dir, "voltage_ratio_distribution.csv"), sep = ";", check.names = F)
+area_df <- read.table(file.path(data.dir, "voltage_area_distribution.csv"), sep = ";", check.names = F)
+```
+
+## Area Ratio
+
+### 2D - PCA 
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=6, fig.width=8}
+prin_comp <- prcomp(ratio_df, rank. = 3)
+pc_vars <- round(prin_comp$sdev / sum(prin_comp$sdev) * 100, 2)
+
+components <- prin_comp[["x"]]
+components <- data.frame(components)
+components <- cbind(components, ID = rownames(ratio_df))
+
+components %>% dplyr::inner_join(compl_df %>% dplyr::select(ID, gmm_1_2) %>% mutate(ID = as.character(ID)), by = "ID") %>%
+  ggplot2::ggplot(ggplot2::aes(x = PC1, y = PC2, fill = gmm_1_2)) + 
+  ggplot2::geom_point(aes(shape = gmm_1_2), size = 4) + 
+  scale_shape_manual(values=c(21, 24)) +
+  scale_fill_manual(values = c("#0D0887FF", "#FA9E3BFF")) + 
+  ggplot2::xlab(paste0("PC1 (", pc_vars[1],"%)")) +
+  ggplot2::ylab(paste0("PC2 (", pc_vars[2],"%)")) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "right",
+                 legend.title = ggplot2::element_blank(),
+                 legend.text = ggplot2::element_text(colour = "black", size = 12),
+                 axis.text = ggplot2::element_text(colour = "black", size = 12),
+                 strip.background = ggplot2::element_rect(fill = "white"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 strip.text = ggplot2::element_text(face = "bold", size = 12))
+
+ggplot2::ggsave(filename = file.path(plot.dir, "PCA_PC12_voltageverteilung_area_ratio.pdf"), width = 8, height = 6, device = "pdf", dpi = 300)
+ggplot2::ggsave(filename = file.path(plot.dir, "PCA_PC12_voltageverteilung_area_ratio.svg"), width = 8, height = 6, device = "svg", dpi = 300)
+```
+
+### 3D - PCA
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=6, fig.width=8}
+fig <- components %>% dplyr::inner_join(compl_df %>% 
+                                          dplyr::select(ID, gmm_1_2) %>% 
+                                          mutate(ID = as.character(ID)), 
+                                        by = "ID") %>% 
+       plot_ly(x = ~PC1, y = ~PC2, z = ~PC3, color = ~gmm_1_2, colors = c("#0D0887FF", "#FA9E3BFF"))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = paste0("PC1 (", pc_vars[1],"%)")),
+                                   yaxis = list(title = paste0("PC2 (", pc_vars[2],"%)")),
+                                   zaxis = list(title = paste0("PC3 (", pc_vars[3],"%)"))))
+
+fig
+```
+
+## Area[mm^2]
+
+### 2D - PCA
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=6, fig.width=8}
+prin_comp <- prcomp(area_df, rank. = 3)
+pc_vars <- round(prin_comp$sdev / sum(prin_comp$sdev) * 100, 2)
+components <- prin_comp[["x"]]
+components <- data.frame(components)
+components <- cbind(components, ID = rownames(area_df))
+
+components %>% dplyr::inner_join(compl_df %>% 
+                                   dplyr::select(ID, gmm_1_2) %>% 
+                                   mutate(ID = as.character(ID)), 
+                                 by = "ID") %>%
+  ggplot2::ggplot(ggplot2::aes(x = PC1, y = PC2, fill = gmm_1_2)) + 
+  ggplot2::geom_point(aes(shape = gmm_1_2), size = 4) + 
+  scale_shape_manual(values=c(21, 24)) +
+  scale_fill_manual(values = c("#0D0887FF", "#FA9E3BFF")) + 
+  ggplot2::xlab(paste0("PC1 (", pc_vars[1],"%)")) +
+  ggplot2::ylab(paste0("PC2 (", pc_vars[2],"%)")) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "right",
+                 legend.title = ggplot2::element_blank(),
+                 legend.text = ggplot2::element_text(colour = "black", size = 12),
+                 axis.text = ggplot2::element_text(colour = "black", size = 12),
+                 strip.background = ggplot2::element_rect(fill = "white"),
+                 axis.title = ggplot2::element_text(face = "bold", size = 12),
+                 strip.text = ggplot2::element_text(face = "bold", size = 12))
+
+
+ggplot2::ggsave(filename = file.path(plot.dir, "PCA_PC12_voltageverteilung_area.pdf"), width = 8, height = 6, device = "pdf", dpi = 300)
+ggplot2::ggsave(filename = file.path(plot.dir, "PCA_PC12_voltageverteilung_area.svg"), width = 8, height = 6, device = "svg", dpi = 300)
+```
+
+### 3D - PCA
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=6, fig.width=8}
+fig <- components %>% dplyr::inner_join(compl_df %>% dplyr::select(ID, gmm_1_2) %>% mutate(ID = as.character(ID)), by = "ID") %>% 
+       plot_ly(x = ~PC1, y = ~PC2, z = ~PC3, color = ~gmm_1_2, colors = c("#0D0887FF", "#FA9E3BFF"))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = paste0("PC1 (", pc_vars[1],"%)")),
+                                   yaxis = list(title = paste0("PC2 (", pc_vars[2],"%)")),
+                                   zaxis = list(title = paste0("PC3 (", pc_vars[3],"%)"))))
+
+fig
+```
+
+# Validation outcome after PVI
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+val_data <- readr::read_csv2(file.path(data.dir, "atrial_cardiomyopathy_outcome.csv"))
+
+val_compl <- compl_df %>% inner_join(val_data, by = "ID")
+
+vars2check <- c("Recurrence AF ECG ≤ 12 months (0=no, 1=yes)",
+  "Recurrence AF ECG FU (0=no, 1=yes)", 
+  "Recurrence AF symptoms +/- ECG  FU (0=no, 1=yes)", 
+  "Recurrence AF symptoms +/- ECG  ≤ 12 months (0=no, 1=yes)")
+```
+
+## Recurrence AF ECG ≤ 12 months
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+fisher_test_table(df = val_compl, gr_row = "gmm_1_2", gr_col = "Recurrence AF ECG ≤ 12 months (0=no, 1=yes)", as_kable = FALSE) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Recurrence AF ECG FU
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+fisher_test_table(df = val_compl, gr_row = "gmm_1_2", gr_col = vars2check[2], as_kable = FALSE) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Recurrence AF symptoms +/- ECG  FU
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+fisher_test_table(df = val_compl, gr_row = "gmm_1_2", gr_col = vars2check[3], as_kable = FALSE) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Recurrence AF symptoms +/- ECG  ≤ 12 months
+
+```{r, warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis'}
+fisher_test_table(df = val_compl, gr_row = "gmm_1_2", gr_col = vars2check[4], as_kable = FALSE) %>% 
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1), 
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+# Tables
+
+## Table 1
+  
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("age_examination", "gender (0=female, 1=male)", "AF (0=paroxysmal, 1=persistent)",
+                   "BMI (kg/m²)", "time_since_diagnosis (years)", "CHA2DS2-VASc", "AA_therapy (0=no AA, 1=amiodarone, 2=flecainide)",
+                   "AA_duration (months)", "aHT    (0=no aHT, 1=aHT)", "stroke (0=no stroke, 1=stroke)",
+                   "Diabetes_mellitus (0=no diabetes, 1=type 1, 2=type 2)", "CRP (mg/dl)", 
+                   "Creatinin (mg/dl)", "GFR (MDRD)", "NT_pro_BNP (pg/ml)", "HbA1c (%)")
+
+
+table_df <- compl_df[,c("ID", "gmm_1_2", comp_features)] %>% 
+            mutate(gender = factor(if_else(`gender (0=female, 1=male)` == 0, 
+                                                               true = "female",
+                                                               false = "male"), 
+                                 levels = c("female", "male")),
+                   `AF` = factor(if_else(`AF (0=paroxysmal, 1=persistent)` == 0, 
+                                                               true = "paroxysmal AF",
+                                                               false = "persistent AF"), 
+                                 levels = c("paroxysmal AF", "persistent AF")),
+                   `AA_therapy` = factor(if_else(`AA_therapy (0=no AA, 1=amiodarone, 2=flecainide)` == 0, 
+                                                               true = "no AA therapy",
+                                                               false = "amiodarone or flecainide"), 
+                                 levels = c("no AA therapy", "amiodarone or flecainide")),
+                   hypertension = factor(if_else(`aHT    (0=no aHT, 1=aHT)` == 0, 
+                                                               true = "no hypertension",
+                                                               false = "hypertension"), 
+                                 levels = c("no hypertension", "hypertension")),
+                   stroke = factor(if_else(`stroke (0=no stroke, 1=stroke)` == 0, 
+                                                               true = "no stroke",
+                                                               false = "stroke"), 
+                                 levels = c("no stroke", "stroke")),
+                   diabetes_mellitus = factor(if_else(`Diabetes_mellitus (0=no diabetes, 1=type 1, 2=type 2)` == 0, 
+                                                               true = "no diabetes",
+                                                               false = "diabetes (type 1 or 2)"), 
+                                 levels = c("no diabetes", "diabetes (type 1 or 2)")),
+                   ) %>% 
+                  dplyr::rename(age = age_examination) %>%
+                  dplyr::select(-`gender (0=female, 1=male)`, -`AF (0=paroxysmal, 1=persistent)`,
+                                -`AA_therapy (0=no AA, 1=amiodarone, 2=flecainide)`, 
+                                -`aHT    (0=no aHT, 1=aHT)`, -`stroke (0=no stroke, 1=stroke)`,
+                                -`Diabetes_mellitus (0=no diabetes, 1=type 1, 2=type 2)`)
+
+res_list <- sapply(colnames(table_df)[-(1:2)], function(sel_feature){
+  
+  if(!all(is.na(table_df %>% dplyr::pull(!!sym(sel_feature))))){
+
+    if(!is.factor(table_df %>% dplyr::pull(!!sym(sel_feature)))){
+
+      return(wilcox_test_table(df = table_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+             
+    }else{
+      return(fisher_test_table(df = table_df, gr_col = "gmm_1_2", gr_row = sel_feature, as_kable = FALSE) %>% 
+               rename(value = !!sym(sel_feature)) %>%
+               mutate(Feature = sel_feature) %>%
+               relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`))
+    }
+    
+  }else{
+    
+    return(NA)
+    
+  }
+}, simplify = FALSE)
+
+na_comps_idx <- unlist(lapply(res_list, function(elem) all(is.na(elem))))
+
+all_tests_cluster_list <- list()
+all_tests_cluster_list[[1]] <- do.call("rbind", res_list[!na_comps_idx]) %>% relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2 -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("IVSd M (cm)", "LVIDd M (cm)", "LVPWd M (cm)", 
+                  "LVEDV biplan (ml)", "LVEF biplan (%)", "GLPS AFI average (%)",
+                  "GLPS 4D (%)")
+
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+            mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[2]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: LA 2D Biplan -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LAEDV MOD Biplan 2D (ml)", "LAESV MOD Biplan 2D (ml)", 
+                   "LAESV Mod Biplan Index BSA 2D (ml/m²)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+            mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[3]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: RA 2D Monoplan -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("RAA (s) (cm²)", "RAESVMod (ml)", "RAESV AL (ml)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[4]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: 4D -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LA Vol.  min 4D (ml)", "LA Vol. max 4D (ml)", "LA Vol pre A (ml)", "LAVImax 4D (ml/m²)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[5]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: LAEF 2D Biplan -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("total LA-EF (%)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[6]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: 4D -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LA-EF total 4D (%)", "LA-EF passive 4D (%)", "LA-EF active 4D (%)", 
+                  "MV a' av. (m/s)", "LAVI/a'2D ((ml/m²)/(m/s))", "LAVI/a' 4D ((ml/m²)/(m/s))")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[7]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: Distolic function -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("MV e' sept. (cm/s)", "MV e' lat. (cm/s)","MV E/e' average", "TR Vmax (m/s)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[8]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: 2D strain -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LASr R av. (%)", "LAScd R av. (%)", "LASct R av. (%)", 
+                   "LASr P av. (%)", "LAScd P av. (%)", "LASct P av. (%)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[9]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1 - Sheet 2: 4D strain -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LASr 4D (%)", "LAScd 4D (%)", "LASct 4D (%)", 
+                  "LASr_c 4D (%)", "LAScd_c 4D (%)", "LASct_c 4D (%)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[10]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+```
+
+<!-- ## Table 1: -->
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("map_points", "P_wave_duration (ms)", "PTFV1 (µV*ms)", 
+                   "LVA_1.0 (cm²)", "LVA_0.5 (cm²)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster_list[[11]] <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+
+ all_tests_cluster_table1 <- do.call("rbind",all_tests_cluster_list)
+
+cbind(all_tests_cluster_table1, "p.adjusted" = p.adjust(all_tests_cluster_table1$`P-value`, method = "BH")) %>% as_tibble() %>%
+  mutate(`P-adj. (short)` = dplyr::case_when(`p.adjusted` >= 0.01 ~ as.character(round(`p.adjusted`, 2)),
+                                             `p.adjusted` < 0.0001 ~ "< 0.0001",
+                                             `p.adjusted` < 0.001 ~ "< 0.001",
+                                             `p.adjusted` < 0.01 ~ "< 0.01"),
+         p.adjusted = format(as.numeric(p.adjusted), digits = 3, scientific = TRUE),
+         `P-value` = format(as.numeric(`P-value`), digits = 3, scientific = TRUE)) %>%
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1),
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Table 1a
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+med_iqr_feats <- c("CRP (mg/dl)", "GFR (MDRD)", "NT_pro_BNP (pg/ml)", "HbA1c (%)", "LVEF biplan (%)", 
+                   "LAVI/a'2D ((ml/m²)/(m/s))", "MV E/e' average", "TR Vmax (m/s)","LVA_1.0 (cm²)", "LVA_0.5 (cm²)")
+
+apply(compl_df[,med_iqr_feats], 2, med_iqr, get_n = TRUE) %>% as_tibble(rownames = "Feature") %>% dplyr::rename("all patients" = value)
+```  
+  
+## Table 2
+
+**Comparison of selected echocardiographic parameters between groups mild AC and severe AC**
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+comp_features <- c("LASr R av. (%)", "LASr P av. (%)", "LAVI/a' 4D ((ml/m²)/(m/s))", 
+                   "LASct R av. (%)", "LASr 4D (%)", "MV e' sept. (cm/s)", "LAVI/a'2D ((ml/m²)/(m/s))", 
+                   "LASct_c 4D (%)")
+
+res_list <- sapply(seq_along(comp_features), function(i){
+
+  sel_feature <- comp_features[i]
+      return(wilcox_test_table(df = compl_df, group = "gmm_1_2", feature = sel_feature, as_kable = FALSE) %>%
+             mutate(`Odds-Ratio` = "-",
+                    Feature = sel_feature,
+                    value = sel_feature) %>%
+             relocate(Feature, value, mild, severe, `Odds-Ratio`, `P-value`)) 
+}, simplify = FALSE)
+
+all_tests_cluster <- do.call("rbind", res_list[!unlist(lapply(res_list, function(elem) all(is.na(elem))))]) %>%
+  relocate(Feature)
+
+cbind(all_tests_cluster, "p.adjusted" = p.adjust(all_tests_cluster$`P-value`, method = "BH")) %>% as_tibble() %>%
+  mutate(`P-adj. (short)` = dplyr::case_when(
+                                                 `p.adjusted` >= 0.01 ~ as.character(round(`p.adjusted`, 2)),
+                                                   `p.adjusted` < 0.0001 ~ "< 0.0001",
+                                                   `p.adjusted` < 0.001 ~ "< 0.001",
+                                                   `p.adjusted` < 0.01 ~ "< 0.01"),
+         p.adjusted = format(as.numeric(p.adjusted), digits = 3, scientific = TRUE),
+         `P-value` = format(as.numeric(`P-value`), digits = 3, scientific = TRUE)) %>%
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1),
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+## Table 3
+
+**Features evaluated with the Boruta algorithm. Display of all features evaluated with the Boruta algorithm as a function of feature importance**
+
+```{r , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=7}
+df_importance %>% dplyr::filter(decision != "Tentative") %>% 
+  group_by(variable) %>% summarise(`Importance score (Median)` = format(median(value), digits = 3, 
+                                                   scientific = F),
+                                   `Importance score (IQR)` = paste0("[", 
+                                                format(quantile(value, 0.25), 
+                                                       digits = 3, scientific = F), 
+                                                ", ", 
+                                                format(quantile(value, 0.75), 
+                                                       digits = 3, scientific = F), "]"),
+                                   Decision = unique(decision)) %>%
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1),
+                      c('10', '30', '50', 'All')),
+    paging = F))
+```
+
+
+## Table 4
+
+**Prediction of SVM for each CV run**
+
+```{r, , warning=FALSE, echo = TRUE, message=FALSE, comment=FALSE, results = 'asis', fig.height=5, fig.width=15}
+svm_linear_result_list$svmFitPredictions_df %>%
+   DT::datatable(extensions = 'Buttons', options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf'),
+    lengthMenu = list(c(10,30, 50, -1),
+                      c('10', '30', '50', 'All')),
+    paging = F))
+
+```
